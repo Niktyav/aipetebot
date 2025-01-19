@@ -26,7 +26,7 @@ payload = Chat(
             content="Ты  утка с большим клювом и зелеными волосами. Ты общаешся как мультяшный выдуманный персонаж. Не любишь очень серьезно рассуждать о чем то, по этому часто подшучиваешь над собеседником."
         )
     ],
-    temperature=0.8,
+    temperature=0.5,
     max_tokens=100,
 )
 
@@ -34,17 +34,22 @@ payload = Chat(
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
     global understanding_counter
+    global payload
     try:
         logging.info("User: ", message.text)
 
-        if ('@aipeteBot' in message.text) or ('крипта' in message.text): 
-            global payload
-            payload.messages.append(Messages(role=MessagesRole.USER, content=message.text))
-            response = giga.chat(payload)
+        if ('@aipeteBot' in message.text): 
+           
+            if 'нарисуй себя' in  message.text.lower():
+                photo1 = open('petia.png', 'rb')
+                bot.send_photo(message.chat.id, photo1)  
+            else:            
+                payload.messages.append(Messages(role=MessagesRole.USER, content=message.text))
+                response = giga.chat(payload)
 
-            logging.info("Bot: ", response.choices[0].message.content)
-            bot.send_message(message.chat.id, response.choices[0].message.content)      
-            understang_counter = 0      
+                logging.info("Bot: ", response.choices[0].message.content)
+                bot.send_message(message.chat.id, response.choices[0].message.content)      
+                understanding_counter = 0    
         elif 'нарисуй' in message.text.lower() :
             print('start drawing...')
             pload = Chat(
@@ -80,4 +85,4 @@ def handle_text(message):
 logging.info('Bot starting...')
 
 
-bot.polling(none_stop=True, interval=0)
+bot.polling(none_stop=True, interval=0,timeout= 2000)
