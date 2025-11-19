@@ -2,33 +2,81 @@ import telebot
 import os
 import logging
 from telebot import types
-from gigachat import GigaChat
-from gigachat.models import Chat, Messages, MessagesRole
 import re
 import base64
+import torch
+from PIL import Image
+from diffusers import (
+    StableDiffusionXLControlNetImg2ImgPipeline,
+    ControlNetModel,
+    DPMSolverMultistepScheduler,
+)
+from transformers import pipeline
+from diffusers.utils import load_image
+import numpy as np
+
+
+
 logging.basicConfig(level=logging.INFO,    
                     format='%(asctime)s - %(levelname)s - %(module)s - %(message)s'
                     )
 
-# счетчик для непонимания
-understanding_counter = 0
 # Создаем бота
-bot = telebot.TeleBot(os.environ.get("BOT_TOKEN"))
-# Используйте токен, полученный в личном кабинете из поля Авторизационные данные
-credentials=os.environ.get("GIGA_TOKEN")
-giga = GigaChat(credentials=credentials, verify_ssl_certs=False)
+bot = telebot.TeleBot("8211695368:AAFACG4BI1j8PvkKP47g5qTMDoj5KQ6z_sM")
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = "cuda"
+dtype = torch.float16
 
-payload = Chat(
-    messages=[
-        Messages(
-            role=MessagesRole.SYSTEM,
-            content="Ты  утка с большим клювом и зелеными волосами. Ты общаешся как мультяшный выдуманный персонаж. Не любишь очень серьезно рассуждать о чем то, по этому часто подшучиваешь над собеседником."
-        )
-    ],
-    temperature=0.5,
-    max_tokens=100,
+# === 1. Готовим depth-карту ===
+# Можно использовать любую модель depth-estimation, которая выдаёт карту глубины
+depth_estimator = pipeline("depth-estimation", model="Intel/dpt-hybrid-midas", device=0)
+
+def make_depth_image(image_path, size=(768, 768)):
+    from diffusers.utils import load_image
+    import numpy as np
+
+    # Загружаем исходное изображение
+    img = load_image(image_path).resize(size)
+
+    # Получаем depth карту (возвращает PIL.Image)
+    depth_pil = depth_estimator(img)["depth"]
+
+    # Переводим в NumPy
+    depth_np = np.array(depth_pil, dtype=np.float32)
+
+    # Нормализуем 0–255
+    depth_np = (depth_np - depth_np.min()) / (depth_np.max() - depth_np.min() + 1e-8)
+    depth_np = (depth_np * 255).astype(np.uint8)
+
+    # Делаем 3 канала RGB
+    depth_rgb = np.stack([depth_np] * 3, axis=-1)
+
+    return Image.fromarray(depth_rgb)
+
+# === 2. ControlNet ===
+controlnet = ControlNetModel.from_pretrained(
+    "diffusers/controlnet-depth-sdxl-1.0",
+    torch_dtype=dtype,
+).to(device)
+
+# === 3. Основной пайплайн (можно поменять на RealVisXL_V4.0 для фотореализма) ===
+pipe = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    controlnet=controlnet,
+    torch_dtype=dtype,
+    variant="fp16",
+).to(device)
+
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+    pipe.scheduler.config,
+    use_karras=True,
+    algorithm_type="sde-dpmsolver++",
 )
+
+
+
+
 
 # Получение сообщений от юзера
 @bot.message_handler(content_types=["text"])
@@ -37,52 +85,56 @@ def handle_text(message):
     global payload
     try:
         logging.info("User: ", message.text)
-
-        if ('@aipeteBot' in message.text): 
-           
-            if 'нарисуй себя' in  message.text.lower():
-                photo1 = open('petia.png', 'rb')
-                bot.send_photo(message.chat.id, photo1)  
-            else:            
-                payload.messages.append(Messages(role=MessagesRole.USER, content=message.text))
-                response = giga.chat(payload)
-
-                logging.info("Bot: ", response.choices[0].message.content)
-                bot.send_message(message.chat.id, response.choices[0].message.content)      
-                understanding_counter = 0    
-        elif 'нарисуй' in message.text.lower() :
-            print('start drawing...')
-            pload = Chat(
-                messages=[Messages(role=MessagesRole.USER, content=message.text)],
-                temperature=0.7,
-                max_tokens=100,
-                function_call="auto",
-            )    
-            ans = giga.chat(pload)    
-            # Регулярное выражение для извлечения значения src
-            src_match = re.search(r'<img src="([^"]+)"', ans.choices[0].message.content)
-            if src_match is None:
-                logging.warning("Bot cannot draw: ", ans.choices[0].message.content)
-                bot.send_message(message.chat.id, ans.choices[0].message.content)      
-            else:
-                # Регулярное выражение для извлечения подписи (текст после тега <img>)
-                caption_match = re.search(r'/> (.+)', ans.choices[0].message.content)
-                img = giga.get_image(src_match.group(1))
-                print('end drawing...')
-
-                bot.send_photo(message.chat.id, base64.b64decode(img.content))
-                bot.send_message(message.chat.id, caption_match.group(1))         
-            understanding_counter = 0   
-
-        else:
-            understanding_counter += 1
-            if understanding_counter > 20:
-                bot.send_message(message.chat.id, 'моя твоя не понимать...')
-                understanding_counter = 0
+        bot.send_message(message.chat.id, "Ожидается картинка")
     except Exception as e:
         logging.error('Ошибка:',e)
-# Запускаем бота
-logging.info('Bot starting...')
+        
+        
+@bot.message_handler(content_types=['photo'])
+def photo(message):       
+    fileID = message.photo[-1].file_id   
+    file_info = bot.get_file(fileID)
+  
+
+    downloaded_file = bot.download_file(file_info.file_path)
+    with open("image.jpg", 'wb') as new_file:
+        new_file.write(downloaded_file)        
+    # === 4. Входное изображение ===
+    input_path = "image.jpg"
+    init_image = Image.open(input_path).convert("RGB").resize((768, 768))
+    depth_image = make_depth_image(input_path, size=(768, 768))
+
+    # === 5. Промпты ===
+    prompt = (
+        "ultra realistic architectural photo"
+    )
+    negative_prompt = (
+        "3d render, cgi, stylized, cartoon, sketch, painting, lowres, text, watermark, oversaturated"
+    )
+
+    # === 6. Генерация ===
+    out = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        image=init_image,
+        control_image=depth_image,
+        strength=0.70,                  # больше = сильнее перерисовка
+        guidance_scale=5.0,             # меньше — реалистичнее
+        num_inference_steps=40,
+        controlnet_conditioning_scale=0.35,  # сила depth
+    ).images[0]
+        #         photo1 = open('petia.png', 'rb')
+    bot.send_photo(message.chat.id, out)  
+    out.save("out_depth_base.png")
 
 
-bot.polling(none_stop=True, interval=0,timeout= 2000)
+if __name__ == "__main__":
+    # Запускаем бота
+    logging.info('Bot starting...')
+    bot.polling(none_stop=True, interval=0,timeout= 2000)
+
+
+
+
+
+

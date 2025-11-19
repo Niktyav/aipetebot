@@ -1,2 +1,9 @@
-pytelegrambotapi
-gigachat
+pyTelegramBotAPI==4.20.0
+
+diffusers>=0.29.0
+transformers>=4.42.0
+accelerate>=0.33.0
+safetensors>=0.4.0
+
+Pillow>=10.3.0
+numpy==1.26.0
